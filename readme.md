@@ -106,3 +106,166 @@ curl -X POST http://localhost:8080/v1/precos/calcular \
 
 Os módulos de estoque, fiscal e fidelidade expõem CRUDs em `/v1/estoque`,
 `/v1/fiscal/documentos` e `/v1/fidelidade/clientes`, respectivamente.
+
+---
+
+# Estado atual do projeto
+
+O projeto já está implementado como um **monólito modular** Spring Boot (um processo, um deploy). O módulo `precos` segue Clean Architecture; `vendas` representa o legado e aplica o **Strangler Fig** por meio de um roteador que alterna entre o cálculo legado e o novo módulo conforme `sisvarejo.precos.rollout-percentual`. Estoque, fiscal e fidelidade são CRUDs simples e isolados. Os testes cobrem fronteiras (ArchUnit), caracterização (golden master), roteador e endpoint.
+
+## Modelo C4
+
+### Nível 1 — Contexto
+
+```mermaid
+C4Context
+    title SisVarejo — Diagrama de Contexto
+    Person(operador, "Operador de loja / Retaguarda", "Consulta preços e gerencia estoque, fiscal e fidelidade")
+    System(sisvarejo, "SisVarejo", "Monólito modular de retaguarda da rede Bom Preço (85 supermercados)")
+    System_Ext(cliente, "Cliente API", "PDV ou sistema que consome a API REST")
+    Rel(operador, sisvarejo, "Usa", "HTTP/REST")
+    Rel(cliente, sisvarejo, "POST /v1/precos/calcular", "JSON/HTTP")
+```
+
+### Nível 2 — Contêineres
+
+```mermaid
+C4Container
+    title SisVarejo — Diagrama de Contêineres
+    Person(cliente, "Cliente da API", "PDV / retaguarda")
+    System_Boundary(s, "SisVarejo") {
+        Container(app, "Aplicação Spring Boot", "Java 17, Spring Boot 3", "Monólito modular: vendas, precos, estoque, fiscal, fidelidade")
+        ContainerDb(db, "H2 em memória", "H2", "Um schema por módulo: precos, estoque, fiscal, fidelidade")
+    }
+    Rel(cliente, app, "Requisições", "REST/JSON")
+    Rel(app, db, "Lê/grava", "JPA/JDBC")
+```
+
+### Nível 3 — Componentes
+
+```mermaid
+C4Component
+    title SisVarejo — Componentes da aplicação
+    Container_Boundary(app, "Aplicação Spring Boot") {
+        Component(vendas, "vendas", "Spring MVC + Service", "Controller, roteador Strangler Fig, calculadora legada e adaptador para o módulo")
+        Component(precos, "precos", "Clean Architecture", "Domínio, caso de uso CalcularPrecoFinal, porta de repositório, adaptador JPA")
+        Component(estoque, "estoque", "CRUD", "/v1/estoque")
+        Component(fiscal, "fiscal", "CRUD", "/v1/fiscal/documentos")
+        Component(fidelidade, "fidelidade", "CRUD", "/v1/fidelidade/clientes")
+        Component(archunit, "ArchUnit", "Testes", "Garante fronteiras entre módulos e domínio sem infraestrutura")
+    }
+    ContainerDb(db, "H2", "Schemas separados")
+    Rel(vendas, precos, "Usa somente precos.api")
+    Rel(precos, db, "schema precos")
+    Rel(estoque, db, "schema estoque")
+    Rel(fiscal, db, "schema fiscal")
+    Rel(fidelidade, db, "schema fidelidade")
+    Rel(archunit, precos, "Verifica regras")
+```
+
+## Diagramas UML
+
+### Componentes / pacotes e dependências
+
+```mermaid
+flowchart LR
+    subgraph vendas
+        VApi[vendas.api]
+        VInt[vendas.interno]
+    end
+    subgraph precos
+        PApi[precos.api]
+        PApp[precos.aplicacao]
+        PDom[precos.dominio]
+        PInt[precos.interno]
+    end
+    VInt --> VApi
+    VInt --> PApi
+    PApp -. implementa .-> PApi
+    PApp --> PDom
+    PInt -. implementa porta .-> PDom
+    PInt --> PApp
+    estoque
+    fiscal
+    fidelidade
+```
+
+### Diagrama de classes (Strangler Fig e Clean Architecture)
+
+```mermaid
+classDiagram
+    direction LR
+    class CalculadoraDePreco {
+        <<interface>>
+        +calcular(SolicitacaoPreco) ResultadoPreco
+    }
+    class CalculadoraDePrecoRoteador
+    class CalculadoraDePrecoLegada
+    class CalculadoraDePrecoModulo
+    class CalculoDePreco {
+        <<interface>>
+        +calcular(produtoId, lojaId, data, quantidade, fidelidade) BigDecimal
+    }
+    class CalcularPrecoFinal
+    class TabelasDePrecoRepositorio {
+        <<interface>>
+        +buscarVigente(produtoId, lojaId, data) Optional~TabelaDePreco~
+    }
+    class TabelasDePrecoRepositorioJpa
+    class TabelaDePreco
+    class RegraDePromocao
+    class Produto
+
+    CalculadoraDePreco <|.. CalculadoraDePrecoRoteador
+    CalculadoraDePrecoRoteador --> CalculadoraDePrecoLegada
+    CalculadoraDePrecoRoteador --> CalculadoraDePrecoModulo
+    CalculadoraDePrecoModulo --> CalculoDePreco
+    CalculoDePreco <|.. CalcularPrecoFinal
+    CalcularPrecoFinal --> TabelasDePrecoRepositorio
+    TabelasDePrecoRepositorio <|.. TabelasDePrecoRepositorioJpa
+    CalcularPrecoFinal --> TabelaDePreco
+    TabelaDePreco --> RegraDePromocao
+    TabelaDePreco --> Produto
+```
+
+### Diagrama de sequência — POST /v1/precos/calcular
+
+```mermaid
+sequenceDiagram
+    actor C as Cliente
+    participant Ctrl as CalculadoraDePrecoController
+    participant R as CalculadoraDePrecoRoteador
+    participant L as CalculadoraDePrecoLegada
+    participant M as CalculadoraDePrecoModulo
+    participant U as CalcularPrecoFinal
+    participant Repo as TabelasDePrecoRepositorio (JPA)
+    C->>Ctrl: POST /v1/precos/calcular
+    Ctrl->>R: calcular(solicitacao)
+    alt rollout = 0% (sombra)
+        R->>L: calcular
+        R->>M: calcular (compara e loga divergência)
+        R-->>Ctrl: resultado legado
+    else sorteio < rollout (canário/ampliação)
+        R->>M: calcular
+        M->>U: calcular
+        U->>Repo: buscarVigente
+        Repo-->>U: TabelaDePreco
+        U-->>M: preço
+        M-->>R: resultado
+        R-->>Ctrl: resultado do módulo
+    else caso contrário
+        R->>L: calcular
+        R-->>Ctrl: resultado legado
+    end
+    Ctrl-->>C: preço final
+```
+
+### Evolução Strangler Fig
+
+```mermaid
+stateDiagram-v2
+    [*] --> Sombra: rollout = 0
+    Sombra --> Canario: 0 < rollout < 100
+    Canario --> Ampliacao: rollout = 100
+    Ampliacao --> [*]
+```
