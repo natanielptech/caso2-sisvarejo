@@ -81,3 +81,28 @@ Criar uma suíte de testes parametrizados que executa um conjunto de combinaçõ
 - [ ] Fachada `CalculadoraDePreco` alterna entre implementação legada e nova via configuração externa
 - [ ] Suíte de testes de caracterização (golden master) comparando as duas implementações para o mesmo conjunto de entradas
 - [ ] Nenhum módulo acessa diretamente as tabelas de outro módulo (verificável tanto por ArchUnit quanto por inspeção do schema)
+
+## Execução da implementação
+
+Requisitos: Java 17 e Maven.
+
+```bash
+mvn spring-boot:run
+mvn test
+```
+
+A aplicação usa H2 em memória, com schemas separados (`precos`, `estoque`, `fiscal` e
+`fidelidade`). O percentual do novo módulo pode ser definido em
+`sisvarejo.precos.rollout-percentual` (0 a 100); o padrão `0` executa ambos os cálculos
+em modo sombra e retorna o resultado legado.
+
+Exemplo de requisição:
+
+```bash
+curl -X POST http://localhost:8080/v1/precos/calcular \
+  -H 'Content-Type: application/json' \
+  -d '{"produtoId":"PROD-001","lojaId":"LOJA-001","data":"2026-01-15","quantidade":1,"fidelidade":false}'
+```
+
+Os módulos de estoque, fiscal e fidelidade expõem CRUDs em `/v1/estoque`,
+`/v1/fiscal/documentos` e `/v1/fidelidade/clientes`, respectivamente.
