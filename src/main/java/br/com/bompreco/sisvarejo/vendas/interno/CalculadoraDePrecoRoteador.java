@@ -30,10 +30,15 @@ public class CalculadoraDePrecoRoteador implements CalculadoraDePreco {
         int percentual = configuracao.getRolloutPercentual();
         if (percentual == 0) {
             ResultadoPreco resultadoLegado = legada.calcular(solicitacao);
-            ResultadoPreco resultadoNovo = modulo.calcular(solicitacao);
-            if (!resultadoLegado.equals(resultadoNovo)) {
-                LOGGER.warn("Divergência entre cálculo legado e módulo de preços: legado={}, módulo={}",
-                        resultadoLegado, resultadoNovo);
+            try {
+                ResultadoPreco resultadoNovo = modulo.calcular(solicitacao);
+                if (!resultadoLegado.equals(resultadoNovo)) {
+                    LOGGER.warn("Divergência entre cálculo legado e módulo de preços: legado={}, módulo={}",
+                            resultadoLegado, resultadoNovo);
+                }
+            } catch (RuntimeException exception) {
+                LOGGER.warn("Falha no cálculo sombra do módulo de preços; mantendo resultado legado.",
+                        exception);
             }
             return resultadoLegado;
         }
